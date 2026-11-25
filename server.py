@@ -120,38 +120,80 @@ def _freshness(conn) -> dict:
         )
     return info
 
+@mcp.tool()
+def search_player(name: str) -> dict:
+    """Look up a tennis player's player id by full name, e.g. 'Andy Roddick'.
+
+    Returns every player with that name; use the pid with the other tools.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT pid, name FROM Players WHERE name = ? COLLATE NOCASE", (name,)
+        ).fetchall()
+        freshness = _freshness(conn)
+
+    if not rows:
+        raise ToolError(f"Player {name!r} not found")
+
+    return {"players": [dict(r) for r in rows], **freshness}
+
 
 @mcp.tool()
-def get_player_profile(name: str) -> dict:
-    """Look up a tennis player's profile by full name, e.g. 'Andy Roddick'."""
+def get_player_profile(pid: str) -> dict:
+    """Look up a tennis player's profile by player id (get a player's id from search_player)."""
+
     with _connect() as conn:
-        row = conn.execute("SELECT * FROM Players WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+        row = conn.execute("SELECT * FROM Players WHERE pid = ?", (pid,)).fetchone()
         freshness = _freshness(conn)
 
     if row is None:
-        raise ToolError(f"Player {name!r} not found")
+        raise ToolError(f"Player {pid!r} not found")
 
     return {"player": dict(row), **freshness}
 
 
 @mcp.tool()
-def head_to_head(player1_name: str, player2_name: str) -> dict:
-    """Career head-to-head record between two players (ATP and WTA). Pass each player's full
-    name separately, e.g. player1_name='Jannik Sinner', player2_name='Carlos Alcaraz'."""
-    query = """SELECT (SELECT COUNT(*) FROM ATPMatches WHERE wname = :w AND lname = :l)
-                    + (SELECT COUNT(*) FROM WTAMatches WHERE wname = :w AND lname = :l)"""
+def head_to_head(p1_id: str, p2_id: str) -> dict:
+    """Career head-to-head record between two players (ATP and WTA). 
+    Pass each player's id separately. (get a player's id from search_player)"""
+
+    wins_query = """SELECT (SELECT COUNT(*) FROM ATPMatches WHERE wid = :w AND lid = :l)
+                         + (SELECT COUNT(*) FROM WTAMatches WHERE wid = :w AND lid = :l)"""
+    name_query = "SELECT name FROM Players WHERE pid = ?"
 
     with _connect() as conn:
-        p1_wins = conn.execute(query, {"w": player1_name, "l": player2_name}).fetchone()[0]
-        p2_wins = conn.execute(query, {"w": player2_name, "l": player1_name}).fetchone()[0]
+        names = {}
+        for pid in (p1_id, p2_id):
+            row = conn.execute(name_query, (pid,)).fetchone()
+            if row is None:
+                raise ToolError(f"Player {pid!r} not found")
+            names[pid] = row["name"]
+        p1_wins = conn.execute(wins_query, {"w": p1_id, "l": p2_id}).fetchone()[0]
+        p2_wins = conn.execute(wins_query, {"w": p2_id, "l": p1_id}).fetchone()[0]
         freshness = _freshness(conn)
 
+    p1_name, p2_name = names[p1_id], names[p2_id]
     return {
-        "record": f"{player1_name} {p1_wins} - {p2_wins} {player2_name}",
-        player1_name: p1_wins,
-        player2_name: p2_wins,
+        "players": [
+            {"pid": p1_id, "name": p1_name, "wins": p1_wins},
+            {"pid": p2_id, "name": p2_name, "wins": p2_wins},
+        ],
+        "summary": f"{p1_name} {p1_wins}–{p2_wins} {p2_name}",
         **freshness,
     }
+
+
+
+# Requires current ranking data: https://github.com/mileslander/tennis-data-pipeline/issues/3
+# @mcp.tool()
+# def current_ranking(pid: str) -> str:
+#   pass
+
+
+# Requires historical ranking: https://github.com/mileslander/tennis-data-pipeline/issues/4
+# @mcp.tool()
+# def ranking_at_date(pid: str, date: str) -> str:
+#   pass
 
 
 if __name__ == "__main__":
