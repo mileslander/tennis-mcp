@@ -133,6 +133,27 @@ def get_player_profile(name: str) -> dict:
 
     return {"player": dict(row), **freshness}
 
+
+@mcp.tool()
+def head_to_head(player1_name: str, player2_name: str) -> dict:
+    """Career head-to-head record between two players (ATP and WTA). Pass each player's full
+    name separately, e.g. player1_name='Jannik Sinner', player2_name='Carlos Alcaraz'."""
+    query = """SELECT (SELECT COUNT(*) FROM ATPMatches WHERE wname = :w AND lname = :l)
+                    + (SELECT COUNT(*) FROM WTAMatches WHERE wname = :w AND lname = :l)"""
+
+    with _connect() as conn:
+        p1_wins = conn.execute(query, {"w": player1_name, "l": player2_name}).fetchone()[0]
+        p2_wins = conn.execute(query, {"w": player2_name, "l": player1_name}).fetchone()[0]
+        freshness = _freshness(conn)
+
+    return {
+        "record": f"{player1_name} {p1_wins} - {p2_wins} {player2_name}",
+        player1_name: p1_wins,
+        player2_name: p2_wins,
+        **freshness,
+    }
+
+
 if __name__ == "__main__":
     threading.Thread(target=_refresh_db, daemon=True).start()
     mcp.run()
