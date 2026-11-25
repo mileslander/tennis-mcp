@@ -275,9 +275,9 @@ def ranking_at_date(pid: str, date: str) -> dict:
 # Requires current and historical ranking: https://github.com/mileslander/tennis-data-pipeline/issues/3, https://github.com/mileslander/tennis-data-pipeline/issues/4
 # @mcp.tool()
 def top_n_players(num_players: int, date: str | None = None, start_ranking: int = 1) -> dict:
-    """Look up the top num_players players from specified starting ranking at specified date.
+    """Look up the top num_players players from specified starting ranking at specified date (YYYY-MM-DD).
     Defaults to start rank of 1 and present rankings. Capped at 100 players. Returns
-    name, rank, points, date, nationality, age."""
+    name, rank, points, date, nationality, age for each player."""
 
     if num_players > 100 or num_players < 1:
         raise ToolError("Invalid input: number of players must be in [1, 100]")
@@ -298,12 +298,56 @@ def top_n_players(num_players: int, date: str | None = None, start_ranking: int 
         freshness = _freshness(conn)
 
     if not player_rows:
-        raise ToolError(f"No players found from rank {start_ranking} at date {date or 'latest ranking date'}")
+        raise ToolError(f"No players found from rank {start_ranking} at {date or 'latest ranking date'}")
 
     return {
         "players": [dict(row) for row in player_rows],
         **freshness,
     }
+
+# Add WTA Support
+@mcp.tool()
+def recent_matches(pid: str, num_matches: int, date: str | None = None) -> dict:
+    """Look ups recent matches on or before date (YYYY-MM-DD) of specified player by player id (get a player's id from search_player).
+    Specify number of matches and ending date. Matches are ordered newest first. Defaults to the most recent matches; capped at 100.
+    Returns tournament name, tournament date, round, winner name, winner seed, winner rank, loser name, loser seed, loser rank, score, minutes for each match.
+    Currently only works for ATP Matches."""
+
+    if num_matches > 100 or num_matches < 1:
+        raise ToolError("Invalid input: number of matches must be in [1, 100]")
+
+    if date:
+        date = _date_validation(date)
+
+    round_ordering =  """CASE ATPMatches.round WHEN 'F' THEN 1 WHEN 'BR' THEN 2 WHEN '3P' THEN 2 WHEN '3rd/4th' THEN 2 WHEN 'SF' THEN 3 WHEN 'QF' THEN 4 
+    WHEN 'R16' THEN 5 WHEN 'R32' THEN 6 WHEN 'R64' THEN 7 WHEN 'R128' THEN 8 WHEN 'R256' THEN 9 ELSE 10 END, ATPMatches.match_num DESC"""
+
+    query = f"""SELECT Tournaments.name as tournament, Tournaments.date, ATPMatches.round, ATPMatches.wname, ATPMatches.wseed, ATPMatches.wrank, 
+    ATPMatches.lname, ATPMatches.lseed, ATPMatches.lrank, ATPMatches.score, ATPMatches.minutes FROM ATPMatches INNER JOIN Tournaments on 
+    ATPMatches.tourney_id = Tournaments.tid AND Tournaments.tour = 'atp' WHERE (ATPMatches.wid = :p OR ATPMatches.lid = :p) 
+    AND (:d is NULL OR Tournaments.date <= :d) ORDER BY Tournaments.date DESC, {round_ordering} LIMIT :l;"""
+
+    with _connect() as conn:
+
+        player = conn.execute("SELECT name FROM Players WHERE pid = ?;", (pid,)).fetchone()
+
+        if not player:
+            raise ToolError(f"No player found with id {pid!r}; get an id from search_player")
+
+        match_rows = conn.execute(query, {'p': pid, 'd': date, 'l': num_matches}).fetchall()
+
+        freshness = _freshness(conn)
+
+    if not match_rows:
+        if date:
+            raise ToolError(f"No ATP matches found for {player['name']} on or before {date}")
+        raise ToolError(f"No ATP matches found for {player['name']} (only ATP matches are supported so far)")
+
+    return {
+        "matches": [dict(match) for match in match_rows],
+        **freshness
+    }
+
 
 if __name__ == "__main__":
     threading.Thread(target=_refresh_db, daemon=True).start()
