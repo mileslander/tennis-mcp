@@ -8,7 +8,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from email.utils import formatdate
 from pathlib import Path
-from datetime import date as Date, time
+from datetime import date as Date
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -121,6 +121,18 @@ def _freshness(conn) -> dict:
         )
     return info
 
+def _date_validation(date: str) -> str:
+    try:
+        parsed = Date.fromisoformat(date).isoformat()
+    except ValueError:
+        raise ToolError(f"Invalid date {date!r}; use YYYY-MM-DD")
+
+    if parsed > Date.today().isoformat():
+        raise ToolError(f"Invalid date {date!r}; Cannot be in the future")
+
+    return parsed
+
+
 @mcp.tool()
 def search_player(name: str) -> dict:
     """Look up a tennis player's player id by full name, e.g. 'Andy Roddick'.
@@ -129,7 +141,7 @@ def search_player(name: str) -> dict:
     """
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT pid, name FROM Players WHERE name = ? COLLATE NOCASE", (name,)
+            "SELECT pid, name FROM Players WHERE name = ? COLLATE NOCASE;", (name,)
         ).fetchall()
         freshness = _freshness(conn)
 
@@ -144,7 +156,7 @@ def get_player_profile(pid: str) -> dict:
     """Look up a tennis player's profile by player id (get a player's id from search_player)."""
 
     with _connect() as conn:
-        row = conn.execute("SELECT * FROM Players WHERE pid = ?", (pid,)).fetchone()
+        row = conn.execute("SELECT * FROM Players WHERE pid = ?;", (pid,)).fetchone()
         freshness = _freshness(conn)
 
     if row is None:
@@ -159,8 +171,8 @@ def head_to_head(p1_id: str, p2_id: str) -> dict:
     Pass each player's id separately. (get a player's id from search_player)"""
 
     wins_query = """SELECT (SELECT COUNT(*) FROM ATPMatches WHERE wid = :w AND lid = :l)
-                         + (SELECT COUNT(*) FROM WTAMatches WHERE wid = :w AND lid = :l)"""
-    name_query = "SELECT name FROM Players WHERE pid = ?"
+                         + (SELECT COUNT(*) FROM WTAMatches WHERE wid = :w AND lid = :l);"""
+    name_query = "SELECT name FROM Players WHERE pid = ?;"
 
     with _connect() as conn:
         names = {}
@@ -219,12 +231,12 @@ def current_ranking(pid: str) -> dict:
     """Find the current ranking of a player by player id (get a player's id from search_player)."""
 
     with _connect() as conn:
-        player = conn.execute("SELECT name FROM Players WHERE pid = ?", (pid,)).fetchone()
+        player = conn.execute("SELECT name FROM Players WHERE pid = ?;", (pid,)).fetchone()
 
         if player is None:
             raise ToolError(f"Player {pid!r} not found")
 
-        rank_row = conn.execute("SELECT rank, points, date FROM Rankings WHERE pid = ? AND date = (SELECT MAX(date) FROM Rankings)", (pid,)).fetchone()
+        rank_row = conn.execute("SELECT rank, points, date FROM Rankings WHERE pid = ? AND date = (SELECT MAX(date) FROM Rankings);", (pid,)).fetchone()
 
         freshness = _freshness(conn)
 
@@ -240,26 +252,18 @@ def ranking_at_date(pid: str, date: str) -> dict:
     """Find the ranking of a player by player id at a specified date (get a player's id from search_player).
     Accepts dates of the form YYYY-MM-DD. Returns pid, name, rank, ranking points, date, and data freshness. """
 
-    try:
-        date = Date.fromisoformat(date).isoformat()
-    except ValueError:
-        raise ToolError(f"Invalid date {date!r}; use YYYY-MM-DD")
-
-    current_date = time.time().isoformat()
-
-    if date > Date.today().isoformat():
-        raise ToolError(f"Invalid date {date!r}; Cannot be in the future")
+    date = _date_validation(date)
 
     # Check that specified date isn't before data coverage. (Add to documentation as well)
 
     with _connect() as conn:
 
-        player = conn.execute("SELECT name FROM Players WHERE pid = ?", (pid,)).fetchone()
+        player = conn.execute("SELECT name FROM Players WHERE pid = ?;", (pid,)).fetchone()
         
         if player is None:
             raise ToolError(f"Player {pid!r} not found")
 
-        rank_row = conn.execute("SELECT rank, points, date FROM Rankings WHERE pid = ? AND date = (SELECT MAX(date) FROM Rankings WHERE date <= ?)", (pid, date)).fetchone()
+        rank_row = conn.execute("SELECT rank, points, date FROM Rankings WHERE pid = ? AND date = (SELECT MAX(date) FROM Rankings WHERE date <= ?);", (pid, date)).fetchone()
 
         freshness = _freshness(conn)
 
@@ -268,6 +272,38 @@ def ranking_at_date(pid: str, date: str) -> dict:
 
     return {"pid": pid, "name": player["name"], **rank_row, **freshness}
 
+# Requires current and historical ranking: https://github.com/mileslander/tennis-data-pipeline/issues/3, https://github.com/mileslander/tennis-data-pipeline/issues/4
+# @mcp.tool()
+def top_n_players(num_players: int, date: str | None = None, start_ranking: int = 1) -> dict:
+    """Look up the top num_players players from specified starting ranking at specified date.
+    Defaults to start rank of 1 and present rankings. Capped at 100 players. Returns
+    name, rank, points, date, nationality, age."""
+
+    if num_players > 100 or num_players < 1:
+        raise ToolError("Invalid input: number of players must be in [1, 100]")
+
+    date_str = "(SELECT MAX(date) FROM Rankings)" 
+
+    if date:
+        date = _date_validation(date)
+        date_str = "(SELECT MAX(date) FROM Rankings WHERE date <= :d)"
+
+    query = f"""SELECT Rankings.rank, Players.name, Rankings.points, Rankings.date, Players.nationality, Players.birthdate 
+    FROM Rankings INNER JOIN Players ON Rankings.pid = Players.pid WHERE Rankings.date = {date_str} AND Rankings.rank >= :r ORDER BY Rankings.rank LIMIT :l;"""
+
+    with _connect() as conn:
+
+        player_rows = conn.execute(query, {'d': date, 'r': start_ranking, 'l': num_players}).fetchall()
+
+        freshness = _freshness(conn)
+
+    if not player_rows:
+        raise ToolError(f"No players found from rank {start_ranking} at date {date or 'latest ranking date'}")
+
+    return {
+        "players": [dict(row) for row in player_rows],
+        **freshness,
+    }
 
 if __name__ == "__main__":
     threading.Thread(target=_refresh_db, daemon=True).start()
