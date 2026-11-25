@@ -214,14 +214,28 @@ def best_national_players(country: str, number_of_players: int = 5) -> dict:
 
 # Requires current ranking data: https://github.com/mileslander/tennis-data-pipeline/issues/3
 # @mcp.tool()
-# def current_ranking(pid: str) -> str:
-#   pass
+def current_ranking(pid: str) -> dict:
+    """Find the current ranking of a player by player id (get a player's id from search_player)."""
+
+    with _connect() as conn:
+        name = conn.execute("""SELECT name FROM Players WHERE pid = ?""", (pid, )).fetchone()
+
+        if name is None:
+            raise ToolError(f"Player {pid!r} not found")
+
+        rank = conn.execute("""SELECT rank FROM Rankings WHERE pid = ? AND date = (SELECT MAX(date, ) FROM Rankings)""", (pid)).fetchone()
+
+        freshness = _freshness(conn)
+
+    if rank is None:
+        raise ToolError(f"{name['name']} is not in the current rankings")
+
+    return {"pid": pid, "name": name["name"], **dict(rank), **freshness}
 
 
 # Requires historical ranking: https://github.com/mileslander/tennis-data-pipeline/issues/4
 # @mcp.tool()
-# def ranking_at_date(pid: str, date: str) -> str:
-#   pass
+#def ranking_at_date(pid: str, date: str) -> str:
 
 
 if __name__ == "__main__":
