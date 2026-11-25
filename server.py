@@ -8,6 +8,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from email.utils import formatdate
 from pathlib import Path
+from datetime import date as Date, time
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -218,24 +219,54 @@ def current_ranking(pid: str) -> dict:
     """Find the current ranking of a player by player id (get a player's id from search_player)."""
 
     with _connect() as conn:
-        name = conn.execute("""SELECT name FROM Players WHERE pid = ?""", (pid, )).fetchone()
+        player = conn.execute("SELECT name FROM Players WHERE pid = ?", (pid,)).fetchone()
 
-        if name is None:
+        if player is None:
             raise ToolError(f"Player {pid!r} not found")
 
-        rank = conn.execute("""SELECT rank FROM Rankings WHERE pid = ? AND date = (SELECT MAX(date, ) FROM Rankings)""", (pid)).fetchone()
+        rank_row = conn.execute("SELECT rank, points, date FROM Rankings WHERE pid = ? AND date = (SELECT MAX(date) FROM Rankings)", (pid,)).fetchone()
 
         freshness = _freshness(conn)
 
-    if rank is None:
-        raise ToolError(f"{name['name']} is not in the current rankings")
+    if not rank_row:
+        raise ToolError(f"{player['name']} is not in the current rankings")
 
-    return {"pid": pid, "name": name["name"], **dict(rank), **freshness}
+    return {"pid": pid, "name": player["name"], **rank_row, **freshness}
 
 
 # Requires historical ranking: https://github.com/mileslander/tennis-data-pipeline/issues/4
 # @mcp.tool()
-#def ranking_at_date(pid: str, date: str) -> str:
+def ranking_at_date(pid: str, date: str) -> dict:
+    """Find the ranking of a player by player id at a specified date (get a player's id from search_player).
+    Accepts dates of the form YYYY-MM-DD. Returns pid, name, rank, ranking points, date, and data freshness. """
+
+    try:
+        date = Date.fromisoformat(date).isoformat()
+    except ValueError:
+        raise ToolError(f"Invalid date {date!r}; use YYYY-MM-DD")
+
+    current_date = time.time().isoformat()
+
+    if date > Date.today().isoformat():
+        raise ToolError(f"Invalid date {date!r}; Cannot be in the future")
+
+    # Check that specified date isn't before data coverage. (Add to documentation as well)
+
+    with _connect() as conn:
+
+        player = conn.execute("SELECT name FROM Players WHERE pid = ?", (pid,)).fetchone()
+        
+        if player is None:
+            raise ToolError(f"Player {pid!r} not found")
+
+        rank_row = conn.execute("SELECT rank, points, date FROM Rankings WHERE pid = ? AND date = (SELECT MAX(date) FROM Rankings WHERE date <= ?)", (pid, date)).fetchone()
+
+        freshness = _freshness(conn)
+
+    if not rank_row:
+        raise ToolError(f"{player['name']} had no ranking at {date}")
+
+    return {"pid": pid, "name": player["name"], **rank_row, **freshness}
 
 
 if __name__ == "__main__":
