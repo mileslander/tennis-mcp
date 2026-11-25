@@ -1,0 +1,4 @@
+.venv
+__pycache__
+tennis_data.db
+tennis_data.db.tmp

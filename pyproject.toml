@@ -1,0 +1,9 @@
+
+[project]
+name = "tennis-mcp"
+version = "1"
+description = "MCP Server for ATP and WTA match, player, and tournament data."
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=2.3.0"
+]
