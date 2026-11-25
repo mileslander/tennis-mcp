@@ -173,6 +173,7 @@ def head_to_head(p1_id: str, p2_id: str) -> dict:
         freshness = _freshness(conn)
 
     p1_name, p2_name = names[p1_id], names[p2_id]
+
     return {
         "players": [
             {"pid": p1_id, "name": p1_name, "wins": p1_wins},
@@ -182,6 +183,33 @@ def head_to_head(p1_id: str, p2_id: str) -> dict:
         **freshness,
     }
 
+
+# Requires current ranking data: https://github.com/mileslander/tennis-data-pipeline/issues/3
+# @mcp.tool()
+def best_national_players(country: str, number_of_players: int = 5) -> dict:
+    """Look up a country's best n players, default of 5 with 1 <= n <= 50. Uses standard three letter
+    IOC abbreviations for countries, e.g. (GER, ARG). Returns each player's name, player id, ranking, 
+    age, and birthplace (if available)"""
+
+    if number_of_players < 1 or number_of_players > 50:
+        raise ToolError("Invalid input: number of players must be in [1, 50]")
+
+    query = """SELECT Players.name, Players.pid, Rankings.rank, Players.birthdate, Players.birthplace FROM Players
+    INNER JOIN Rankings ON Players.pid = Rankings.pid WHERE nationality = ? AND Rankings.date 
+    = (SELECT MAX(date) FROM Rankings) ORDER BY Rankings.rank LIMIT ?;"""
+
+    with _connect() as conn:
+        players_list = conn.execute(query, (country.upper(), number_of_players)).fetchall()
+
+        freshness = _freshness(conn)
+
+    if not players_list:
+        raise ToolError(f"No ranked players found for {country!r}")
+
+    return {
+            "players": [dict(r) for r in players_list],
+            **freshness
+    }
 
 
 # Requires current ranking data: https://github.com/mileslander/tennis-data-pipeline/issues/3
